@@ -22,58 +22,58 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_profile'])) {
     $email = trim($_POST['email']);
     $phone_number = trim($_POST['phone_number']);
     
-    // Handle profile photo upload
-    $profile_photo = $user['profile_photo'];
+    // Handle profile photo upload as BLOB
+    $profile_photo_blob = $user['profile_photo_blob'];
     if (isset($_FILES['profile_photo']) && $_FILES['profile_photo']['error'] == UPLOAD_ERR_OK) {
-        $upload_dir = 'uploads/profile_photos/';
+        $file_tmp = $_FILES['profile_photo']['tmp_name'];
+        $file_size = $_FILES['profile_photo']['size'];
+        $file_type = $_FILES['profile_photo']['type'];
         
-        // Create directory if it doesn't exist
-        if (!is_dir($upload_dir)) {
-            mkdir($upload_dir, 0755, true);
+        // Validate file type
+        $allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+        if (!in_array($file_type, $allowed_types)) {
+            $error_message = 'Only JPG, PNG, and GIF files are allowed';
         }
-        
-        $file_extension = pathinfo($_FILES['profile_photo']['name'], PATHINFO_EXTENSION);
-        $allowed_extensions = ['jpg', 'jpeg', 'png', 'gif'];
-        
-        if (in_array(strtolower($file_extension), $allowed_extensions)) {
-            // Check file size (max 5MB)
-            if ($_FILES['profile_photo']['size'] <= 5 * 1024 * 1024) {
-                $file_name = 'profile_' . $_SESSION['user_id'] . '_' . time() . '.' . $file_extension;
-                $file_path = $upload_dir . $file_name;
-                
-                if (move_uploaded_file($_FILES['profile_photo']['tmp_name'], $file_path)) {
-                    // Delete old profile photo if exists
-                    if ($user['profile_photo'] && file_exists($user['profile_photo'])) {
-                        unlink($user['profile_photo']);
-                    }
-                    $profile_photo = $file_path;
-                } else {
-                    $error_message = 'Failed to upload profile photo';
-                }
-            } else {
-                $error_message = 'Profile photo must be less than 5MB';
+        // Validate file size (5MB max)
+        elseif ($file_size > 5 * 1024 * 1024) {
+            $error_message = 'File size must be less than 5MB';
+        }
+        else {
+            // Read file content as BLOB
+            $profile_photo_blob = file_get_contents($file_tmp);
+            if ($profile_photo_blob === false) {
+                $error_message = 'Failed to read uploaded file';
             }
-        } else {
-            $error_message = 'Only JPG, JPEG, PNG, and GIF files are allowed';
         }
     }
     
-    // Update profile if no upload errors
+    // Update profile if no errors
     if (empty($error_message)) {
-        $update_query = "UPDATE users SET full_name = ?, email = ?, phone_number = ?, profile_photo = ? WHERE id = ?";
+        $update_query = "UPDATE users SET full_name = ?, email = ?, phone_number = ?, profile_photo_blob = ? WHERE id = ?";
         $stmt = $db->prepare($update_query);
         
-        if ($stmt->execute([$full_name, $email, $phone_number, $profile_photo, $_SESSION['user_id']])) {
-            $_SESSION['full_name'] = $full_name;
-            $_SESSION['email'] = $email;
-            $success_message = 'Profile updated successfully';
+        try {
+            $stmt->bindParam(1, $full_name, PDO::PARAM_STR);
+            $stmt->bindParam(2, $email, PDO::PARAM_STR);
+            $stmt->bindParam(3, $phone_number, PDO::PARAM_STR);
+            $stmt->bindParam(4, $profile_photo_blob, PDO::PARAM_LOB);
+            $stmt->bindParam(5, $_SESSION['user_id'], PDO::PARAM_INT);
             
-            // Refresh user data
-            $stmt = $db->prepare($user_query);
-            $stmt->execute([$_SESSION['user_id']]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        } else {
-            $error_message = 'Failed to update profile';
+            if ($stmt->execute()) {
+                $_SESSION['full_name'] = $full_name;
+                $_SESSION['email'] = $email;
+                $success_message = 'Profile updated successfully';
+                
+                // Refresh user data
+                $stmt = $db->prepare($user_query);
+                $stmt->execute([$_SESSION['user_id']]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            } else {
+                $error_info = $stmt->errorInfo();
+                $error_message = 'Failed to update profile: ' . $error_info[2];
+            }
+        } catch (PDOException $e) {
+            $error_message = 'Database error: ' . $e->getMessage();
         }
     }
 }
@@ -140,12 +140,12 @@ include 'includes/header.php';
                     <h5 class="mb-0"><i class="fas fa-user"></i> Profile Information</h5>
                 </div>
                 <div class="card-body">
-                    <form method="POST" action="" enctype="multipart/form-data">
+                    <form method="POST" action="" enctype="multipart/form-data" id="profileForm">
                         <div class="row">
                             <div class="col-md-4 text-center mb-4">
                                 <div class="profile-photo-container">
-                                    <?php if ($user['profile_photo'] && file_exists($user['profile_photo'])): ?>
-                                        <img src="<?php echo $user['profile_photo']; ?>" class="profile-photo mb-3" alt="Profile Photo">
+                                    <?php if (!empty($user['profile_photo_blob'])): ?>
+                                        <img src="data:image/jpeg;base64,<?php echo base64_encode($user['profile_photo_blob']); ?>" class="profile-photo mb-3" alt="Profile Photo">
                                     <?php else: ?>
                                         <div class="profile-photo mb-3 bg-kedah-blue text-white d-flex align-items-center justify-content-center" style="font-size: 3rem;">
                                             <?php echo strtoupper(substr($user['full_name'], 0, 1)); ?>
@@ -216,7 +216,7 @@ include 'includes/header.php';
                     <h5 class="mb-0"><i class="fas fa-lock"></i> Change Password</h5>
                 </div>
                 <div class="card-body">
-                    <form method="POST" action="">
+                    <form method="POST" action="" id="passwordForm">
                         <div class="mb-3">
                             <label for="current_password" class="form-label">Current Password</label>
                             <input type="password" class="form-control" id="current_password" name="current_password" required>
@@ -336,22 +336,40 @@ document.getElementById('new_password').addEventListener('input', function() {
 });
 
 // Form submission validation
-document.querySelector('form[method="POST"]').addEventListener('submit', function(e) {
-    const newPassword = document.getElementById('new_password');
-    const confirmPassword = document.getElementById('confirm_password');
+document.getElementById('profileForm').addEventListener('submit', function(e) {
+    const fileInput = document.getElementById('profile_photo');
+    const file = fileInput.files[0];
     
-    if (newPassword && confirmPassword) {
-        if (newPassword.value !== confirmPassword.value) {
+    if (file) {
+        if (file.size > 5 * 1024 * 1024) {
             e.preventDefault();
-            alert('Passwords do not match');
+            alert('File size must be less than 5MB');
             return false;
         }
         
-        if (newPassword.value.length < 6) {
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+        if (!allowedTypes.includes(file.type)) {
             e.preventDefault();
-            alert('Password must be at least 6 characters long');
+            alert('Only JPG, PNG, and GIF files are allowed');
             return false;
         }
+    }
+});
+
+document.getElementById('passwordForm').addEventListener('submit', function(e) {
+    const newPassword = document.getElementById('new_password').value;
+    const confirmPassword = document.getElementById('confirm_password').value;
+    
+    if (newPassword !== confirmPassword) {
+        e.preventDefault();
+        alert('Passwords do not match');
+        return false;
+    }
+    
+    if (newPassword.length < 6) {
+        e.preventDefault();
+        alert('Password must be at least 6 characters long');
+        return false;
     }
 });
 </script>
